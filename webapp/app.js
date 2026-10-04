@@ -55,6 +55,7 @@ function cellHtml(st, t, p, withLabel) {
 
 // ---------- screens ----------
 function render() {
+  closePicker();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
   if (tg && tg.BackButton) (S.tab === 'classes' && S.cls ? tg.BackButton.show() : tg.BackButton.hide());
   if (S.tab === 'topics') return renderTopics();
@@ -101,7 +102,7 @@ function renderClass() {
       <div class="list">` + c.students.map(st => `
         <div class="row"><span class="grow name">${esc(st.name)}</span>
         ${partsOf(t).map(p => cellHtml(st, t, p, true)).join('')}</div>`).join('') + `</div>
-      <p class="hint">Katakni bosing: bo'sh → yashil → sariq → qizil.</p>`;
+      <p class="hint">Katakni bosing va rangni tanlang.</p>`;
   } else {
     const head1 = c.topics.map(t => `<th class="topic ${t.has_parts ? '' : 'single'}" colspan="${partsOf(t).length}">${esc(t.title)}</th>`).join('');
     const head2 = c.topics.map(t => partsOf(t).map(p => `<th>${PART_LABEL[p] ? PART_LABEL[p][0] : '•'}</th>`).join('')).join('');
@@ -198,14 +199,50 @@ async function setMark(btn, color) {
   } catch (e) { paint(before); say(e.message); }
 }
 
+// ---------- colour picker: tap a cell, then tap the colour ----------
+let picker = null;
+
+function closePicker() {
+  if (!picker) return;
+  picker.target.classList.remove('picked');
+  picker.el.remove();
+  picker = null;
+}
+
+function openPicker(btn) {
+  closePicker();
+  const el = document.createElement('div');
+  el.className = 'picker';
+  el.innerHTML = ['green', 'yellow', 'red', ''].map(c =>
+    `<button class="cell ${c}" data-pick="${c}">${SYM[c] || '–'}</button>`).join('');
+  document.body.appendChild(el);
+  const r = btn.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8)) + 'px';
+  el.style.top = (r.top - h - 8 > 8 ? r.top - h - 8 : r.bottom + 8) + 'px';
+  btn.classList.add('picked');
+  picker = { el, target: btn };
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const target = picker.target;
+    closePicker();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+    setMark(target, b.dataset.pick);
+  });
+}
+
+document.addEventListener('click', e => {
+  if (picker && !e.target.closest('.picker') && !e.target.closest('.cell')) closePicker();
+});
+window.addEventListener('scroll', closePicker, true);
+
 $view.addEventListener('click', async e => {
   const el = e.target.closest('button');
   if (!el) return;
   try {
     if (el.classList.contains('cell')) {
-      const now = ORDER.find(c => c && el.classList.contains(c)) || '';
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-      return setMark(el, ORDER[(ORDER.indexOf(now) + 1) % ORDER.length]);
+      return picker && picker.target === el ? closePicker() : openPicker(el);
     }
     if (el.dataset.openClass) return openClass(+el.dataset.openClass);
     if (el.dataset.openStudent) { S.studentId = +el.dataset.openStudent; render(); return window.scrollTo(0, 0); }
