@@ -109,3 +109,8 @@ table.grid { border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .picker .cell, .grid .picker .cell { width: 46px; height: 46px; font-size: 19px; border-radius: 10px; }
 .picker .cell:not(.green):not(.yellow):not(.red) { color: var(--hint); }
 .cell.picked { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* chapters */
+.linkish { border: 0; background: none; text-align: left; padding: 0; min-width: 0; }
+h2.sub { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); margin: 16px 6px 6px; font-weight: 600; }
+#topicChapter { margin: 4px 0 8px; }

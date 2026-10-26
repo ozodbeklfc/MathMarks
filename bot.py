@@ -12,7 +12,9 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineK
 import config
 import excel
 import services
-from db import Session
+from sqlalchemy import func, select
+
+from db import Session, Topic
 
 teacher = Router()
 teacher.message.filter(F.from_user.id.in_(config.TEACHER_IDS))
@@ -24,6 +26,11 @@ class AddClass(StatesGroup):
     name = State()
 
 
+class AddChapter(StatesGroup):
+    title = State()
+    topics = State()
+
+
 class AddMembers(StatesGroup):
     names = State()
     confirm = State()
@@ -33,6 +40,8 @@ HELP = (
     "Buyruqlar:\n"
     "/add_class — yangi sinf qo'shish\n"
     "/add_class_members — sinfga o'quvchilar ro'yxatini qo'shish\n"
+    "/add_chapter — yangi bob va uning mavzularini qo'shish\n"
+    "/chapters — boblar ro'yxati\n"
     "/classes — sinflar ro'yxati\n"
     "/import — Excel fayldan yuklash\n"
     "/export — Excel faylga chiqarish\n"
@@ -52,7 +61,7 @@ async def start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Assalomu alaykum! Bu — baholar jurnali.\n\n"
-        "Mavzularni kiritish va baho qo'yish uchun jurnalni oching.\n\n" + HELP,
+        "Boblar, mavzular va baholar uchun jurnalni oching.\n\n" + HELP,
         reply_markup=open_app_kb())
 
 
@@ -76,6 +85,63 @@ async def add_class_name(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ «{cls.name}» sinfi tayyor.\nO'quvchilarni qo'shish uchun: /add_class_members")
+
+
+@teacher.message(Command("add_chapter"))
+async def add_chapter(message: Message, state: FSMContext):
+    await state.set_state(AddChapter.title)
+    await message.answer("Bob nomini yuboring. Masalan: 1-bob. Natural sonlar")
+
+
+@teacher.message(AddChapter.title, F.text, ~F.text.startswith("/"))
+async def add_chapter_title(message: Message, state: FSMContext):
+    with Session() as s:
+        ch = services.add_chapter(s, message.text[:120])
+        s.commit()
+    await state.set_state(AddChapter.topics)
+    await state.update_data(chapter_id=ch.id, chapter_title=ch.title)
+    await message.answer(
+        f"✅ «{ch.title}» bobi tayyor.\n\n"
+        "Endi shu bobning mavzularini yuboring, har biri alohida qatorda.\n"
+        "Har bir mavzu barcha sinflarga qo'shiladi va sinf ishi + uy ishi bilan baholanadi.\n"
+        "Mavzularni keyin qo'shmoqchi bo'lsangiz: /skip")
+
+
+@teacher.message(AddChapter.topics, Command("skip"))
+async def add_chapter_skip(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Mavzularni jurnalning «Boblar» bo'limida qo'shishingiz mumkin.", reply_markup=open_app_kb())
+
+
+@teacher.message(AddChapter.topics, F.text, ~F.text.startswith("/"))
+async def add_chapter_topics(message: Message, state: FSMContext):
+    titles = services.parse_names(message.text)
+    if not titles:
+        await message.answer("Ro'yxatni o'qib bo'lmadi. Har bir mavzuni alohida qatorga yozing yoki /skip.")
+        return
+    data = await state.get_data()
+    with Session() as s:
+        for title in titles:
+            services.add_topic(s, title[:120], True, chapter_id=data["chapter_id"])
+        s.commit()
+    await state.clear()
+    listing = "\n".join(f"{i}. {t}" for i, t in enumerate(titles, 1))
+    await message.answer(f"✅ «{data['chapter_title']}» bobiga {len(titles)} ta mavzu qo'shildi:\n\n{listing}",
+                         reply_markup=open_app_kb())
+
+
+@teacher.message(Command("chapters"))
+async def chapters(message: Message):
+    with Session() as s:
+        chs = services.list_chapters(s)
+        counts = dict(s.execute(select(Topic.chapter_id, func.count()).group_by(Topic.chapter_id)).all())
+    if not chs:
+        await message.answer("Hali bob yo'q. /add_chapter bilan qo'shing.")
+        return
+    lines = [f"• {c.title} — {counts.get(c.id, 0)} mavzu" for c in chs]
+    if counts.get(None):
+        lines.append(f"• Bobsiz — {counts[None]} mavzu")
+    await message.answer("Boblar:\n" + "\n".join(lines), reply_markup=open_app_kb())
 
 
 @teacher.message(Command("add_class_members"))
@@ -167,7 +233,8 @@ async def import_file(message: Message, bot: Bot):
     if not report:
         await message.answer("Faylda sinf topilmadi.")
         return
-    lines = [f"• {r['class']} — {r['students']} o'quvchi, {r['topics']} mavzu, {r['marks']} baho" for r in report]
+    lines = [f"• {r['class']} — {r['students']} o'quvchi, {r['chapters']} bob, {r['topics']} mavzu, {r['marks']} baho"
+             for r in report]
     await message.answer("✅ Yuklandi:\n" + "\n".join(lines), reply_markup=open_app_kb())
 
 
@@ -200,6 +267,8 @@ async def run_bot():
         BotCommand(command="add_class", description="Sinf qo'shish"),
         BotCommand(command="add_class_members", description="O'quvchilar ro'yxatini qo'shish"),
         BotCommand(command="classes", description="Sinflar ro'yxati"),
+        BotCommand(command="add_chapter", description="Bob qo'shish"),
+        BotCommand(command="chapters", description="Boblar ro'yxati"),
         BotCommand(command="import", description="Excel fayldan yuklash"),
         BotCommand(command="export", description="Excel faylga chiqarish"),
     ])

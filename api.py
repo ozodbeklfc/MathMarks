@@ -7,11 +7,11 @@ from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 import config
 import services
-from db import ClassTopic, Session, Student, Topic
+from db import Chapter, ClassTopic, Session, Student, Topic
 
 
 def telegram_user_id(init_data: str):
@@ -51,15 +51,21 @@ class NamesIn(BaseModel):
     names: list[str]
 
 
+class ChapterIn(BaseModel):
+    title: str
+
+
 class TopicIn(BaseModel):
     title: str
     has_parts: bool = True
     class_ids: list[int] | None = None
+    chapter_id: int | None = None
 
 
 class TopicPatch(BaseModel):
     title: str | None = None
     class_ids: list[int] | None = None
+    chapter_id: int | None = None  # sent as null = move out of any chapter
 
 
 class MarkIn(BaseModel):
@@ -112,7 +118,51 @@ def delete_student(student_id: int):
 
 def _topic_json(s, t):
     ids = s.scalars(select(ClassTopic.class_id).where(ClassTopic.topic_id == t.id)).all()
-    return {"id": t.id, "title": t.title, "has_parts": t.has_parts, "class_ids": list(ids)}
+    return {"id": t.id, "title": t.title, "has_parts": t.has_parts, "class_ids": list(ids),
+            "chapter_id": t.chapter_id}
+
+
+def _check_chapter(s, chapter_id):
+    if chapter_id is not None and not s.get(Chapter, chapter_id):
+        raise HTTPException(404, "Bob topilmadi")
+
+
+@router.get("/chapters")
+def get_chapters():
+    with Session() as s:
+        counts = dict(s.execute(select(Topic.chapter_id, func.count()).group_by(Topic.chapter_id)).all())
+        return [{"id": c.id, "title": c.title, "topics": counts.get(c.id, 0)} for c in services.list_chapters(s)]
+
+
+@router.post("/chapters")
+def post_chapter(body: ChapterIn):
+    if not services.clean(body.title):
+        raise HTTPException(400, "Nom bo'sh")
+    with Session() as s:
+        ch = services.add_chapter(s, body.title)
+        s.commit()
+        return {"id": ch.id, "title": ch.title}
+
+
+@router.patch("/chapters/{chapter_id}")
+def patch_chapter(chapter_id: int, body: ChapterIn):
+    with Session() as s:
+        ch = s.get(Chapter, chapter_id)
+        if not ch:
+            raise HTTPException(404, "Bob topilmadi")
+        if services.clean(body.title):
+            ch.title = services.clean(body.title)
+        s.commit()
+        return {"id": ch.id, "title": ch.title}
+
+
+@router.delete("/chapters/{chapter_id}")
+def delete_chapter(chapter_id: int):
+    """Removes the chapter only; its topics and marks stay, without a chapter."""
+    with Session() as s:
+        s.execute(delete(Chapter).where(Chapter.id == chapter_id))
+        s.commit()
+    return {"ok": True}
 
 
 @router.get("/topics")
@@ -127,7 +177,8 @@ def post_topic(body: TopicIn):
     if not services.clean(body.title):
         raise HTTPException(400, "Nom bo'sh")
     with Session() as s:
-        t = services.add_topic(s, body.title, body.has_parts, body.class_ids)
+        _check_chapter(s, body.chapter_id)
+        t = services.add_topic(s, body.title, body.has_parts, body.class_ids, body.chapter_id)
         s.commit()
         return _topic_json(s, t)
 
@@ -140,6 +191,9 @@ def patch_topic(topic_id: int, body: TopicPatch):
             raise HTTPException(404, "Mavzu topilmadi")
         if body.title and services.clean(body.title):
             t.title = services.clean(body.title)
+        if "chapter_id" in body.model_fields_set:
+            _check_chapter(s, body.chapter_id)
+            t.chapter_id = body.chapter_id
         if body.class_ids is not None:
             have = set(s.scalars(select(ClassTopic.class_id).where(ClassTopic.topic_id == t.id)))
             want = set(body.class_ids)

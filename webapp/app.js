@@ -4,7 +4,9 @@ const inTelegram = !!(tg && tg.initData);
 if (tg) { tg.ready(); tg.expand(); }
 
 const $view = document.getElementById('view');
-const S = { tab: 'classes', classes: [], topics: [], cls: null, mode: 'rank', topicId: null, studentId: null, editId: null };
+// chapterId: null = list of chapters, 'none' = topics without a chapter, a number = that chapter
+const S = { tab: 'classes', classes: [], topics: [], chapters: [], cls: null, mode: 'rank', topicId: null,
+  studentId: null, editId: null, chapterId: null, editChapterId: null };
 const SYM = { green: '✓', yellow: '~', red: '✕' };
 const ORDER = ['', 'green', 'yellow', 'red'];   // one tap moves to the next colour
 
@@ -57,8 +59,9 @@ function cellHtml(st, t, p, withLabel) {
 function render() {
   closePicker();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
-  if (tg && tg.BackButton) (S.tab === 'classes' && S.cls ? tg.BackButton.show() : tg.BackButton.hide());
-  if (S.tab === 'topics') return renderTopics();
+  const deep = S.tab === 'classes' ? !!S.cls : S.chapterId !== null;
+  if (tg && tg.BackButton) (deep ? tg.BackButton.show() : tg.BackButton.hide());
+  if (S.tab === 'chapters') return S.chapterId === null ? renderChapters() : renderChapterTopics();
   if (!S.cls) return renderClasses();
   if (S.studentId) return renderStudent();
   renderClass();
@@ -83,7 +86,7 @@ function renderClass() {
   if (!c.students.length) {
     body = `<div class="empty">Bu sinfda o'quvchi yo'q.<br>Botda /add_class_members buyrug'i bilan qo'shing.</div>`;
   } else if (!c.topics.length) {
-    body = `<div class="empty">Bu sinfda mavzu yo'q.<br>«Mavzular» bo'limida mavzu qo'shing.</div>`;
+    body = `<div class="empty">Bu sinfda mavzu yo'q.<br>«Boblar» bo'limida mavzu qo'shing.</div>`;
   } else if (S.mode === 'rank') {
     body = `<div class="list">` + ranked().map(r => `
       <button class="row" data-open-student="${r.st.id}">
@@ -96,7 +99,10 @@ function renderClass() {
     if (!c.topics.some(t => t.id === S.topicId)) S.topicId = c.topics[c.topics.length - 1].id;
     const t = c.topics.find(x => x.id === S.topicId);
     body = `<div class="bar">
-        <select id="topicSel">${c.topics.map(x => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select>
+        <select id="topicSel">${byChapter(c.topics, c.chapters).map(g => {
+          const opts = g.topics.map(x => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('');
+          return g.title ? `<optgroup label="${esc(g.title)}">${opts}</optgroup>` : opts;
+        }).join('')}</select>
         <button class="btn ghost" id="fillGreen">Bo'shlari ✓</button>
       </div>
       <div class="list">` + c.students.map(st => `
@@ -131,16 +137,64 @@ function renderStudent() {
   const st = S.cls.students.find(x => x.id === S.studentId);
   $view.innerHTML = `<div class="head"><button class="back" data-back>‹ ${esc(S.cls.name)}</button><h1>${esc(st.name)}</h1></div>
     <div class="stats" id="stats">${studentStats(st)}</div>
-    <div class="list">` + S.cls.topics.map(t => `
-      <div class="row"><span class="grow name">${esc(t.title)}</span>
-      ${partsOf(t).map(p => cellHtml(st, t, p, true)).join('')}</div>`).join('') + `</div>`;
+    ` + byChapter(S.cls.topics, S.cls.chapters).map(g => `
+      ${g.title ? `<h2 class="sub">${esc(g.title)}</h2>` : ''}
+      <div class="list">${g.topics.map(t => `
+        <div class="row"><span class="grow name">${esc(t.title)}</span>
+        ${partsOf(t).map(p => cellHtml(st, t, p, true)).join('')}</div>`).join('')}</div>`).join('');
 }
 
-function renderTopics() {
-  const editing = S.topics.find(t => t.id === S.editId);
+// Topics split into chapter groups, in the order they come. Topics without a chapter get title ''.
+function byChapter(topics, chapters) {
+  const title = Object.fromEntries(chapters.map(c => [c.id, c.title]));
+  const groups = [];
+  for (const t of topics) {
+    const name = title[t.chapter_id] || '';
+    if (!groups.length || groups[groups.length - 1].title !== name) groups.push({ title: name, topics: [] });
+    groups[groups.length - 1].topics.push(t);
+  }
+  return groups;
+}
+
+function renderChapters() {
+  const editing = S.chapters.find(c => c.id === S.editChapterId);
+  const loose = S.topics.filter(t => !t.chapter_id).length;
+  const rows = S.chapters.map((c, i) => `
+    <div class="row">
+      <span class="place">${i + 1}</span>
+      <button class="grow linkish" data-open-chapter="${c.id}"><div class="name">${esc(c.title)}</div>
+        <div class="hint">${c.topics} ta mavzu</div></button>
+      <button class="btn small" data-edit-chapter="${c.id}">✎</button>
+      <button class="btn danger" data-del-chapter="${c.id}">✕</button>
+      <span class="chev">›</span>
+    </div>`).join('') + (loose ? `
+    <div class="row">
+      <span class="place">–</span>
+      <button class="grow linkish" data-open-chapter="none"><div class="name">Bobsiz mavzular</div>
+        <div class="hint">${loose} ta mavzu</div></button>
+      <span class="chev">›</span>
+    </div>` : '');
+  $view.innerHTML = `<h1>Boblar</h1>
+    <form class="card" id="chapterForm">
+      <div class="bar" style="margin:0">
+        <input type="text" id="chapterTitle" placeholder="Bob nomi" maxlength="120" value="${editing ? esc(editing.title) : ''}">
+        <button class="btn" type="submit">${editing ? 'Saqlash' : "Qo'shish"}</button>
+      </div>
+      ${editing ? `<button class="btn small" type="button" data-cancel-chapter>Bekor qilish</button>` : ''}
+    </form>` + (rows ? `<div class="list">${rows}</div>` : `<div class="empty">Hali bob yo'q.<br>Yuqorida bob nomini yozing yoki botda /add_chapter.</div>`);
+}
+
+function renderChapterTopics() {
+  const ch = S.chapters.find(c => c.id === S.chapterId);
+  if (S.chapterId !== 'none' && !ch) { S.chapterId = null; return renderChapters(); }
+  const mine = S.topics.filter(t => (S.chapterId === 'none' ? !t.chapter_id : t.chapter_id === S.chapterId));
+  const editing = mine.find(t => t.id === S.editId);
   const checked = id => (editing ? editing.class_ids.includes(id) : true);
   const classes = S.classes.map(c => `<label><input type="checkbox" name="cls" value="${c.id}" ${checked(c.id) ? 'checked' : ''}> ${esc(c.name)}</label>`).join('');
-  const rows = S.topics.map((t, i) => `
+  const move = editing ? `<div class="hint">Bob:</div>
+      <select id="topicChapter">${S.chapters.map(c => `<option value="${c.id}" ${c.id === editing.chapter_id ? 'selected' : ''}>${esc(c.title)}</option>`).join('')}
+        <option value="" ${editing.chapter_id ? '' : 'selected'}>Bobsiz</option></select>` : '';
+  const rows = mine.map((t, i) => `
     <div class="row">
       <span class="place">${i + 1}</span>
       <span class="grow"><div class="name">${esc(t.title)}</div>
@@ -149,22 +203,24 @@ function renderTopics() {
       <button class="btn small" data-edit-topic="${t.id}">✎</button>
       <button class="btn danger" data-del-topic="${t.id}">✕</button>
     </div>`).join('');
-  $view.innerHTML = `<h1>Mavzular</h1>
+  $view.innerHTML = `<div class="head"><button class="back" data-back>‹ Boblar</button>
+      <h1>${ch ? esc(ch.title) : 'Bobsiz mavzular'}</h1></div>
     <form class="card" id="topicForm">
       <input type="text" id="topicTitle" placeholder="Mavzu nomi" maxlength="120" value="${editing ? esc(editing.title) : ''}">
       <label><input type="checkbox" id="topicParts" ${!editing || editing.has_parts ? 'checked' : ''} ${editing ? 'disabled' : ''}>
         Sinf ishi va uy ishi alohida baholanadi</label>
+      ${move}
       ${classes ? `<div class="hint">Qaysi sinflar uchun:</div><div class="chips">${classes}</div>` : ''}
       <div class="bar" style="margin:10px 0 0">
         <button class="btn" type="submit">${editing ? 'Saqlash' : "Mavzu qo'shish"}</button>
         ${editing ? `<button class="btn ghost" type="button" data-cancel-edit>Bekor qilish</button>` : ''}
       </div>
-    </form>` + (rows ? `<div class="list">${rows}</div>` : `<div class="empty">Hali mavzu yo'q.</div>`);
+    </form>` + (rows ? `<div class="list">${rows}</div>` : `<div class="empty">Bu bobda hali mavzu yo'q.</div>`);
 }
 
 // ---------- actions ----------
 async function loadLists() {
-  [S.classes, S.topics] = await Promise.all([api('GET', '/classes'), api('GET', '/topics')]);
+  [S.classes, S.topics, S.chapters] = await Promise.all([api('GET', '/classes'), api('GET', '/topics'), api('GET', '/chapters')]);
 }
 
 async function openClass(id) {
@@ -175,6 +231,7 @@ async function openClass(id) {
 }
 
 async function goBack() {
+  if (S.tab === 'chapters') { S.chapterId = null; S.editId = null; await loadLists(); render(); return; }
   if (S.studentId) { S.studentId = null; render(); return; }
   S.cls = null;
   await loadLists();
@@ -255,6 +312,22 @@ $view.addEventListener('click', async e => {
     }
     if (el.dataset.editTopic) { S.editId = +el.dataset.editTopic; render(); return window.scrollTo(0, 0); }
     if ('cancelEdit' in el.dataset) { S.editId = null; return render(); }
+    if (el.dataset.openChapter) {
+      S.chapterId = el.dataset.openChapter === 'none' ? 'none' : +el.dataset.openChapter;
+      S.editId = null; S.editChapterId = null; render(); return window.scrollTo(0, 0);
+    }
+    if (el.dataset.editChapter) { S.editChapterId = +el.dataset.editChapter; render(); return window.scrollTo(0, 0); }
+    if ('cancelChapter' in el.dataset) { S.editChapterId = null; return render(); }
+    if (el.dataset.delChapter) {
+      const c = S.chapters.find(x => x.id === +el.dataset.delChapter);
+      if (await ask(`«${c.title}» bobi o'chirilsinmi? Uning mavzulari va baholari saqlanadi, «Bobsiz» bo'limiga o'tadi.`)) {
+        await api('DELETE', '/chapters/' + c.id);
+        S.editChapterId = null;
+        await loadLists();
+        render();
+      }
+      return;
+    }
     if (el.dataset.delTopic) {
       const t = S.topics.find(x => x.id === +el.dataset.delTopic);
       if (await ask(`«${t.title}» mavzusi va uning barcha baholari o'chirilsinmi?`)) {
@@ -273,12 +346,29 @@ $view.addEventListener('change', e => {
 
 $view.addEventListener('submit', async e => {
   e.preventDefault();
+  if (e.target.id === 'chapterForm') {
+    const title = document.getElementById('chapterTitle').value.trim();
+    if (!title) return say('Bob nomini yozing.');
+    try {
+      if (S.editChapterId) await api('PATCH', '/chapters/' + S.editChapterId, { title });
+      else await api('POST', '/chapters', { title });
+      S.editChapterId = null;
+      await loadLists();
+      render();
+    } catch (err) { say(err.message); }
+    return;
+  }
   const title = document.getElementById('topicTitle').value.trim();
   if (!title) return say('Mavzu nomini yozing.');
   const class_ids = [...document.querySelectorAll('input[name=cls]:checked')].map(i => +i.value);
   try {
-    if (S.editId) await api('PATCH', '/topics/' + S.editId, { title, class_ids });
-    else await api('POST', '/topics', { title, has_parts: document.getElementById('topicParts').checked, class_ids });
+    const chapter_id = S.chapterId === 'none' ? null : S.chapterId;
+    if (S.editId) {
+      const sel = document.getElementById('topicChapter');
+      await api('PATCH', '/topics/' + S.editId, { title, class_ids, chapter_id: sel && sel.value ? +sel.value : null });
+    } else {
+      await api('POST', '/topics', { title, has_parts: document.getElementById('topicParts').checked, class_ids, chapter_id });
+    }
     S.editId = null;
     await loadLists();
     render();
@@ -290,6 +380,8 @@ document.querySelector('.tabs').addEventListener('click', async e => {
   if (!b) return;
   S.tab = b.dataset.tab;
   S.editId = null;
+  S.editChapterId = null;
+  if (S.tab === 'chapters') S.chapterId = null;
   try {
     await loadLists();
     if (S.tab === 'classes' && S.cls) S.cls = await api('GET', '/classes/' + S.cls.id);

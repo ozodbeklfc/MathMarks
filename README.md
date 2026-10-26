@@ -42,5 +42,15 @@ DEV_MODE=1 python main.py        # open http://localhost:8000
 
 ## Bot commands
 
-`/start`, `/add_class`, `/add_class_members`, `/classes`, `/import`, `/export`, `/cancel`.
+`/start`, `/add_class`, `/add_class_members`, `/add_chapter`, `/chapters`, `/classes`, `/import`, `/export`, `/cancel`.
+
+`/add_chapter` asks for the chapter (bob) name, then for its topics, one per line (`/skip` to add them later).
+
 Sending an `.xlsx` file imports it: each sheet becomes a class, and a class with the same name is replaced.
+Two layouts are read:
+
+- the original gradebook: topics in row 1, students from row 2;
+- the `/export` file: `Bob` in A1, chapter names in row 1 (merged over their topics), topics in row 2, students from row 3.
+
+Deleting a chapter keeps its topics and marks; they move to "Bobsiz mavzular".
+An existing database is upgraded automatically on start (the chapter column is added, no data is lost).

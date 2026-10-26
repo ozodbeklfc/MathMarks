@@ -4,7 +4,7 @@ import re
 from sqlalchemy import delete, func, select
 
 import config
-from db import ClassTopic, Mark, SchoolClass, Student, Topic
+from db import Chapter, ClassTopic, Mark, SchoolClass, Student, Topic
 
 
 def clean(text: str) -> str:
@@ -59,9 +59,25 @@ def add_students(s, class_id: int, names: list[str]) -> int:
     return added
 
 
-def add_topic(s, title: str, has_parts: bool, class_ids=None) -> Topic:
+def list_chapters(s):
+    return s.scalars(select(Chapter).order_by(Chapter.position, Chapter.id)).all()
+
+
+def add_chapter(s, title: str) -> Chapter:
+    title = clean(title)
+    ch = s.scalar(select(Chapter).where(Chapter.title == title))
+    if ch:
+        return ch
+    pos = (s.scalar(select(func.max(Chapter.position))) or 0) + 1
+    ch = Chapter(title=title, position=pos)
+    s.add(ch)
+    s.flush()
+    return ch
+
+
+def add_topic(s, title: str, has_parts: bool, class_ids=None, chapter_id=None) -> Topic:
     pos = (s.scalar(select(func.max(Topic.position))) or 0) + 1
-    t = Topic(title=clean(title), has_parts=has_parts, position=pos)
+    t = Topic(title=clean(title), has_parts=has_parts, position=pos, chapter_id=chapter_id)
     s.add(t)
     s.flush()
     if class_ids is None:
@@ -86,9 +102,12 @@ def set_mark(s, student_id: int, topic_id: int, part: str, color):
 
 
 def class_topics(s, class_id: int):
+    # Topics without a chapter first (as imported), then chapter by chapter.
     return s.scalars(
         select(Topic).join(ClassTopic, ClassTopic.topic_id == Topic.id)
-        .where(ClassTopic.class_id == class_id).order_by(ClassTopic.position, Topic.id)
+        .outerjoin(Chapter, Chapter.id == Topic.chapter_id)
+        .where(ClassTopic.class_id == class_id)
+        .order_by(Chapter.id.is_not(None), Chapter.position, Chapter.id, ClassTopic.position, Topic.id)
     ).all()
 
 
@@ -121,7 +140,9 @@ def class_data(s, class_id: int):
         r["place"] = 1 + sum(1 for o in rows if o["total"] > r["total"])
     return {
         "id": cls.id, "name": cls.name, "points": config.POINTS, "max": max_total,
-        "topics": [{"id": t.id, "title": t.title, "has_parts": t.has_parts} for t in topics],
+        "chapters": [{"id": c.id, "title": c.title} for c in list_chapters(s)],
+        "topics": [{"id": t.id, "title": t.title, "has_parts": t.has_parts, "chapter_id": t.chapter_id}
+                   for t in topics],
         "students": rows,
     }
 

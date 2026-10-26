@@ -37,10 +37,20 @@ class Student(Base):
     position: Mapped[int] = mapped_column(default=0)
 
 
+class Chapter(Base):
+    """Bob: a group of topics."""
+    __tablename__ = "chapters"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(128))
+    position: Mapped[int] = mapped_column(default=0)
+
+
 class Topic(Base):
     __tablename__ = "topics"
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(128))
+    # Deleting a chapter keeps its topics and marks; they become "bobsiz".
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True)
     # True: two marks (toq = classwork, juft = homework). False: one mark.
     has_parts: Mapped[bool] = mapped_column(default=True)
     position: Mapped[int] = mapped_column(default=0)
@@ -65,3 +75,9 @@ class Mark(Base):
 
 def init_db():
     Base.metadata.create_all(engine)
+    # Databases made before chapters existed: add the missing column, keep all data.
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(topics)")]
+        if "chapter_id" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE topics ADD COLUMN chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL")
