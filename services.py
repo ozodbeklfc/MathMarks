@@ -116,19 +116,27 @@ def class_topics(s, class_id: int):
     ).all()
 
 
-def class_data(s, class_id: int):
-    """Everything about one class: topics, students, marks, totals and places."""
+def class_data(s, class_id: int, chapter=None):
+    """Everything about one class: topics, students, marks, totals and places.
+
+    chapter: None = all topics, 0 = topics without a chapter, an id = only that chapter.
+    Totals and places then count only those topics.
+    """
     cls = s.get(SchoolClass, class_id)
     if not cls:
         return None
     topics = class_topics(s, class_id)
+    if chapter is not None:
+        topics = [t for t in topics if (t.chapter_id or 0) == chapter]
+    topic_ids = {t.id for t in topics}
     cells = [(t.id, p) for t in topics for p in parts_of(t.has_parts)]
     max_total = len(cells) * max(config.POINTS.values())
     students = s.scalars(select(Student).where(Student.class_id == class_id).order_by(Student.position, Student.id)).all()
     marks = {}
     if students:
         for m in s.scalars(select(Mark).where(Mark.student_id.in_([st.id for st in students]))):
-            marks.setdefault(m.student_id, {})[f"{m.topic_id}:{m.part}"] = m.color
+            if m.topic_id in topic_ids:
+                marks.setdefault(m.student_id, {})[f"{m.topic_id}:{m.part}"] = m.color
     rows = []
     for st in students:
         mk = marks.get(st.id, {})
@@ -152,10 +160,10 @@ def class_data(s, class_id: int):
     }
 
 
-def classes_summary(s):
+def classes_summary(s, chapter=None):
     out = []
     for c in list_classes(s):
-        d = class_data(s, c.id)
+        d = class_data(s, c.id, chapter)
         n = len(d["students"])
         avg = round(sum(r["total"] for r in d["students"]) / n, 1) if n else 0
         out.append({"id": c.id, "name": c.name, "students": n, "topics": len(d["topics"]), "avg": avg, "max": d["max"]})

@@ -114,3 +114,12 @@ table.grid { border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .linkish { border: 0; background: none; text-align: left; padding: 0; min-width: 0; }
 h2.sub { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); margin: 16px 6px 6px; font-weight: 600; }
 #topicChapter { margin: 4px 0 8px; }
+
+/* chapter buttons in Sinflar */
+.chips-row { display: flex; gap: 6px; overflow-x: auto; margin: 0 -12px 12px; padding: 0 12px 2px; scrollbar-width: none; }
+.chips-row::-webkit-scrollbar { display: none; }
+.chip {
+  flex: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 7px 14px; font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.chip.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

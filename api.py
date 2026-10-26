@@ -76,9 +76,10 @@ class MarkIn(BaseModel):
 
 
 @router.get("/classes")
-def get_classes():
+def get_classes(chapter: int | None = None):
+    """chapter: none = all topics, 0 = topics without a chapter, an id = that chapter."""
     with Session() as s:
-        return services.classes_summary(s)
+        return services.classes_summary(s, chapter)
 
 
 @router.post("/classes")
@@ -92,9 +93,9 @@ def post_class(body: ClassIn):
 
 
 @router.get("/classes/{class_id}")
-def get_class(class_id: int):
+def get_class(class_id: int, chapter: int | None = None):
     with Session() as s:
-        data = services.class_data(s, class_id)
+        data = services.class_data(s, class_id, chapter)
     if not data:
         raise HTTPException(404, "Sinf topilmadi")
     return data

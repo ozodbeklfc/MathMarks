@@ -6,7 +6,15 @@ if (tg) { tg.ready(); tg.expand(); }
 const $view = document.getElementById('view');
 // chapterId: null = list of chapters, 'none' = topics without a chapter, a number = that chapter
 const S = { tab: 'classes', classes: [], topics: [], chapters: [], cls: null, mode: 'rank', topicId: null,
-  studentId: null, editId: null, chapterId: null, editChapterId: null };
+  studentId: null, editId: null, chapterId: null, editChapterId: null,
+  view: undefined };   // view: chapter shown in Sinflar — null = all, 0 = without chapter, an id = that chapter
+
+// Remember the chosen chapter between visits (if the browser allows it).
+const store = {
+  get() { try { const v = localStorage.getItem('viewChapter'); return v === null ? undefined : JSON.parse(v); } catch (e) { return undefined; } },
+  set(v) { try { localStorage.setItem('viewChapter', JSON.stringify(v)); } catch (e) { /* ignore */ } },
+};
+const chapterQuery = () => (S.view === null || S.view === undefined ? '' : '?chapter=' + S.view);
 const SYM = { green: '✓', yellow: '~', red: '✕' };
 const ORDER = ['', 'green', 'yellow', 'red'];   // one tap moves to the next colour
 
@@ -67,6 +75,15 @@ function render() {
   renderClass();
 }
 
+// Row of chapter buttons shown in Sinflar: Hammasi, each chapter, Bobsiz (only if there are such topics).
+function chapterChips() {
+  if (!S.chapters.length) return '';
+  const items = [[null, 'Hammasi'], ...S.chapters.map(c => [c.id, c.title])];
+  if (S.topics.some(t => !t.chapter_id)) items.push([0, 'Bobsiz']);
+  return `<div class="chips-row">${items.map(([id, title]) =>
+    `<button class="chip ${S.view === id ? 'on' : ''}" data-view="${id === null ? 'all' : id}">${esc(title)}</button>`).join('')}</div>`;
+}
+
 function renderClasses() {
   const rows = S.classes.map(c => `
     <button class="row" data-open-class="${c.id}">
@@ -74,7 +91,7 @@ function renderClasses() {
       <div class="hint">${c.students} o'quvchi · ${c.topics} mavzu · o'rtacha ${c.avg} / ${c.max}</div></span>
       <span class="chev">›</span>
     </button>`).join('');
-  $view.innerHTML = `<h1>Sinflar</h1>` + (rows ? `<div class="list">${rows}</div>`
+  $view.innerHTML = `<h1>Sinflar</h1>${chapterChips()}` + (rows ? `<div class="list">${rows}</div>`
     : `<div class="empty">Hali sinf yo'q.<br>Botda /add_class yoki /import buyrug'idan foydalaning.</div>`);
 }
 
@@ -86,7 +103,9 @@ function renderClass() {
   if (!c.students.length) {
     body = `<div class="empty">Bu sinfda o'quvchi yo'q.<br>Botda /add_class_members buyrug'i bilan qo'shing.</div>`;
   } else if (!c.topics.length) {
-    body = `<div class="empty">Bu sinfda mavzu yo'q.<br>«Boblar» bo'limida mavzu qo'shing.</div>`;
+    body = S.view === null || S.view === undefined
+      ? `<div class="empty">Bu sinfda mavzu yo'q.<br>«Boblar» bo'limida mavzu qo'shing.</div>`
+      : `<div class="empty">Bu bobda bu sinf uchun mavzu yo'q.</div>`;
   } else if (S.mode === 'rank') {
     body = `<div class="list">` + ranked().map(r => `
       <button class="row" data-open-student="${r.st.id}">
@@ -122,7 +141,7 @@ function renderClass() {
       <p class="hint">S — sinf ishi, U — uy ishi.</p>`;
   }
   $view.innerHTML = `<div class="head"><button class="back" data-back>‹ Sinflar</button><h1>${esc(c.name)}</h1></div>
-    <div class="seg">${seg}</div>${body}`;
+    ${chapterChips()}<div class="seg">${seg}</div>${body}`;
 }
 
 function studentStats(st) {
@@ -220,11 +239,16 @@ function renderChapterTopics() {
 
 // ---------- actions ----------
 async function loadLists() {
-  [S.classes, S.topics, S.chapters] = await Promise.all([api('GET', '/classes'), api('GET', '/topics'), api('GET', '/chapters')]);
+  [S.topics, S.chapters] = await Promise.all([api('GET', '/topics'), api('GET', '/chapters')]);
+  // First visit: start with the newest chapter. A deleted chapter falls back to all topics.
+  if (S.view === undefined) S.view = store.get();
+  if (S.view === undefined) S.view = S.chapters.length ? S.chapters[S.chapters.length - 1].id : null;
+  if (S.view && !S.chapters.some(c => c.id === S.view)) S.view = null;
+  S.classes = await api('GET', '/classes' + chapterQuery());
 }
 
 async function openClass(id) {
-  S.cls = await api('GET', '/classes/' + id);
+  S.cls = await api('GET', '/classes/' + id + chapterQuery());
   S.studentId = null;
   render();
   window.scrollTo(0, 0);
@@ -300,6 +324,13 @@ $view.addEventListener('click', async e => {
     if (el.classList.contains('cell')) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       return picker && picker.target === el ? closePicker() : openPicker(el);
+    }
+    if (el.dataset.view) {
+      S.view = el.dataset.view === 'all' ? null : +el.dataset.view;
+      store.set(S.view);
+      S.classes = await api('GET', '/classes' + chapterQuery());
+      if (S.cls) S.cls = await api('GET', '/classes/' + S.cls.id + chapterQuery());
+      return render();
     }
     if (el.dataset.openClass) return openClass(+el.dataset.openClass);
     if (el.dataset.openStudent) { S.studentId = +el.dataset.openStudent; render(); return window.scrollTo(0, 0); }
@@ -384,7 +415,7 @@ document.querySelector('.tabs').addEventListener('click', async e => {
   if (S.tab === 'chapters') S.chapterId = null;
   try {
     await loadLists();
-    if (S.tab === 'classes' && S.cls) S.cls = await api('GET', '/classes/' + S.cls.id);
+    if (S.tab === 'classes' && S.cls) S.cls = await api('GET', '/classes/' + S.cls.id + chapterQuery());
   } catch (err) { say(err.message); }
   render();
 });
