@@ -5,10 +5,10 @@ import re
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import delete, select
+from sqlalchemy import func, select
 
 import services
-from db import ClassTopic, SchoolClass, Student, Topic
+from db import ClassTopic, Student, Topic
 
 FILL_TO_COLOR = {"00B050": "green", "FFFF00": "yellow", "FF0000": "red"}
 COLOR_TO_FILL = {v: k for k, v in FILL_TO_COLOR.items()}
@@ -39,8 +39,15 @@ def _chapter_by_column(ws) -> dict:
     return {c: services.clean(t) for c, t in out.items() if t and services.clean(t)}
 
 
-def import_workbook(s, data: bytes) -> list[dict]:
-    """Each sheet becomes a class. A class with the same name is replaced.
+def import_workbook(s, data: bytes, chapter_id=None) -> list[dict]:
+    """Add the file's data to the journal. Nothing that is not in the file is deleted.
+
+    Each sheet is a class (matched by name, ignoring spaces and case). Students are matched
+    by name; new ones are added. Topics are attached to the class; for every topic in the
+    file its cells overwrite the stored marks, including empty cells.
+
+    chapter_id given: every topic in the file belongs to that chapter (one file per chapter).
+    chapter_id None: chapters come from the file's own chapter row (our export), else none.
 
     Two layouts are read: the original gradebook (topic headers in row 1) and our own
     export (chapter names in row 1, topic headers in row 2, "Bob" written in A1).
@@ -50,7 +57,7 @@ def import_workbook(s, data: bytes) -> list[dict]:
     for ws in wb.worksheets:
         with_chapters = services.clean(ws.cell(1, 1).value or "") == CHAPTER_MARK
         head_row = 2 if with_chapters else 1
-        chapter_of = _chapter_by_column(ws) if with_chapters else {}
+        chapter_of = _chapter_by_column(ws) if with_chapters and chapter_id is None else {}
         # Topic headers. "(toq)" / "(juft)" columns of one title form one topic.
         columns = []  # (column index, title, part)
         for col in range(3, ws.max_column + 1):
@@ -68,39 +75,52 @@ def import_workbook(s, data: bytes) -> list[dict]:
             continue
 
         cls = services.add_class(s, ws.title)
-        s.execute(delete(Student).where(Student.class_id == cls.id))
-        s.execute(delete(ClassTopic).where(ClassTopic.class_id == cls.id))
-        s.flush()
+        in_class = set(s.scalars(select(ClassTopic.topic_id).where(ClassTopic.class_id == cls.id)))
+        pos = s.scalar(select(func.max(ClassTopic.position)).where(ClassTopic.class_id == cls.id)) or 0
 
-        topic_ids, pos = {}, 0
+        topic_ids, chapters_seen = {}, set()
         for col, title, part in columns:
             has_parts = part != "single"
             key = (title, has_parts)
             if key in topic_ids:
                 continue
-            chapter_id = services.add_chapter(s, chapter_of[col]).id if col in chapter_of else None
-            t = s.scalar(select(Topic).where(Topic.title == title, Topic.has_parts == has_parts))
+            ch = chapter_id
+            if ch is None and col in chapter_of:
+                ch = services.add_chapter(s, chapter_of[col]).id
+            if ch is not None:
+                chapters_seen.add(ch)
+            # The same topic name may exist in several chapters: look it up inside its chapter.
+            same_chapter = Topic.chapter_id.is_(None) if ch is None else Topic.chapter_id == ch
+            t = s.scalar(select(Topic).where(Topic.title == title, Topic.has_parts == has_parts, same_chapter))
             if not t:
-                t = services.add_topic(s, title, has_parts, class_ids=[], chapter_id=chapter_id)
-            elif chapter_id:
-                t.chapter_id = chapter_id
-            pos += 1
-            s.add(ClassTopic(class_id=cls.id, topic_id=t.id, position=pos))
+                t = services.add_topic(s, title, has_parts, class_ids=[], chapter_id=ch)
+            if t.id not in in_class:
+                pos += 1
+                s.add(ClassTopic(class_id=cls.id, topic_id=t.id, position=pos))
+                in_class.add(t.id)
             topic_ids[key] = t.id
         s.flush()
 
-        n_marks = 0
-        for i, r in enumerate(rows, 1):
-            st = Student(class_id=cls.id, full_name=services.clean(ws.cell(r, 2).value), position=i)
-            s.add(st)
-            s.flush()
+        students = {services.clean(st.full_name).lower(): st
+                    for st in s.scalars(select(Student).where(Student.class_id == cls.id))}
+        st_pos = max([st.position for st in students.values()] or [0])
+        n_marks = n_new = 0
+        for r in rows:
+            name = services.clean(ws.cell(r, 2).value)
+            st = students.get(name.lower())
+            if not st:
+                st_pos += 1
+                st = Student(class_id=cls.id, full_name=name, position=st_pos)
+                s.add(st)
+                s.flush()
+                students[name.lower()] = st
+                n_new += 1
             for col, title, part in columns:
                 color = _cell_color(ws.cell(r, col))
-                if color:
-                    services.set_mark(s, st.id, topic_ids[(title, part != "single")], part, color)
-                    n_marks += 1
-        report.append({"class": cls.name, "students": len(rows), "topics": len(topic_ids), "marks": n_marks,
-                       "chapters": len(set(chapter_of[c] for c, _, _ in columns if c in chapter_of))})
+                services.set_mark(s, st.id, topic_ids[(title, part != "single")], part, color)
+                n_marks += bool(color)
+        report.append({"class": cls.name, "students": len(rows), "new_students": n_new,
+                       "topics": len(topic_ids), "marks": n_marks, "chapters": len(chapters_seen)})
     return report
 
 

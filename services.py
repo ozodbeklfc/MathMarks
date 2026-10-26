@@ -29,11 +29,16 @@ def list_classes(s):
     return s.scalars(select(SchoolClass).order_by(SchoolClass.position, SchoolClass.id)).all()
 
 
+def same_name(a: str, b: str) -> bool:
+    """'6-02(1)' and '6-02 (1)' are the same class."""
+    return re.sub(r"\s+", "", a).lower() == re.sub(r"\s+", "", b).lower()
+
+
 def add_class(s, name: str) -> SchoolClass:
     name = clean(name)
-    cls = s.scalar(select(SchoolClass).where(SchoolClass.name == name))
-    if cls:
-        return cls
+    for cls in list_classes(s):
+        if same_name(cls.name, name):
+            return cls
     pos = (s.scalar(select(func.max(SchoolClass.position))) or 0) + 1
     cls = SchoolClass(name=name, position=pos)
     s.add(cls)
@@ -155,3 +160,9 @@ def classes_summary(s):
         avg = round(sum(r["total"] for r in d["students"]) / n, 1) if n else 0
         out.append({"id": c.id, "name": c.name, "students": n, "topics": len(d["topics"]), "avg": avg, "max": d["max"]})
     return out
+
+
+def reset_all(s):
+    """Delete every class, student, topic, chapter and mark."""
+    for model in (Mark, ClassTopic, Student, Topic, Chapter, SchoolClass):
+        s.execute(delete(model))

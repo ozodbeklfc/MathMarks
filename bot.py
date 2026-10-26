@@ -3,7 +3,7 @@ import io
 from datetime import date
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardButton,
@@ -14,7 +14,7 @@ import excel
 import services
 from sqlalchemy import func, select
 
-from db import Session, Topic
+from db import Chapter, Session, Topic
 
 teacher = Router()
 teacher.message.filter(F.from_user.id.in_(config.TEACHER_IDS))
@@ -31,6 +31,10 @@ class AddChapter(StatesGroup):
     topics = State()
 
 
+class ImportFile(StatesGroup):
+    file = State()
+
+
 class AddMembers(StatesGroup):
     names = State()
     confirm = State()
@@ -43,8 +47,9 @@ HELP = (
     "/add_chapter — yangi bob va uning mavzularini qo'shish\n"
     "/chapters — boblar ro'yxati\n"
     "/classes — sinflar ro'yxati\n"
-    "/import — Excel fayldan yuklash\n"
+    "/import — Excel fayldan yuklash (bob tanlanadi)\n"
     "/export — Excel faylga chiqarish\n"
+    "/reset — hamma ma'lumotni o'chirish (oldin nusxa yuboriladi)\n"
     "/cancel — bekor qilish"
 )
 
@@ -102,15 +107,23 @@ async def add_chapter_title(message: Message, state: FSMContext):
     await state.update_data(chapter_id=ch.id, chapter_title=ch.title)
     await message.answer(
         f"✅ «{ch.title}» bobi tayyor.\n\n"
-        "Endi shu bobning mavzularini yuboring, har biri alohida qatorda.\n"
-        "Har bir mavzu barcha sinflarga qo'shiladi va sinf ishi + uy ishi bilan baholanadi.\n"
-        "Mavzularni keyin qo'shmoqchi bo'lsangiz: /skip")
+        "Endi shu bobning Excel faylini yuboring — undagi mavzular va baholar shu bobga qo'shiladi.\n\n"
+        "Yoki mavzular ro'yxatini yozing, har biri alohida qatorda.\n"
+        "Keyinroq qo'shmoqchi bo'lsangiz: /skip")
 
 
 @teacher.message(AddChapter.topics, Command("skip"))
 async def add_chapter_skip(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Mavzularni jurnalning «Boblar» bo'limida qo'shishingiz mumkin.", reply_markup=open_app_kb())
+
+
+@teacher.message(AddChapter.topics, F.document)
+async def add_chapter_file(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    await do_import(message, bot, message.document.file_id, message.document.file_name,
+                    data["chapter_id"], data["chapter_title"])
 
 
 @teacher.message(AddChapter.topics, F.text, ~F.text.startswith("/"))
@@ -209,23 +222,24 @@ async def classes(message: Message):
     await message.answer("Sinflar:\n" + "\n".join(lines), reply_markup=open_app_kb())
 
 
-@teacher.message(Command("import"))
-async def import_help(message: Message):
-    await message.answer(
-        "Excel faylni (.xlsx) shu yerga yuboring.\n"
-        "Har bir varaq — alohida sinf. Shu nomli sinf bor bo'lsa, u fayldagi ma'lumot bilan almashtiriladi.")
+def chapter_picker(prefix: str):
+    with Session() as s:
+        chs = services.list_chapters(s)
+    rows = [[InlineKeyboardButton(text=c.title, callback_data=f"{prefix}:{c.id}")] for c in chs]
+    rows.append([InlineKeyboardButton(text="Fayldagi boblar bo'yicha / bobsiz", callback_data=f"{prefix}:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@teacher.message(F.document)
-async def import_file(message: Message, bot: Bot):
-    if not (message.document.file_name or "").lower().endswith(".xlsx"):
+async def do_import(message: Message, bot: Bot, file_id: str, file_name: str, chapter_id, chapter_title=None):
+    """Adds the file's data to the journal; nothing else is deleted."""
+    if not (file_name or "").lower().endswith(".xlsx"):
         await message.answer("Faqat .xlsx fayl qabul qilinadi.")
         return
     buf = io.BytesIO()
-    await bot.download(message.document, destination=buf)
+    await bot.download(file_id, destination=buf)
     try:
         with Session() as s:
-            report = excel.import_workbook(s, buf.getvalue())
+            report = excel.import_workbook(s, buf.getvalue(), chapter_id=chapter_id)
             s.commit()
     except Exception as e:  # a broken file must not stop the bot
         await message.answer(f"Faylni o'qib bo'lmadi: {e}")
@@ -233,9 +247,82 @@ async def import_file(message: Message, bot: Bot):
     if not report:
         await message.answer("Faylda sinf topilmadi.")
         return
-    lines = [f"• {r['class']} — {r['students']} o'quvchi, {r['chapters']} bob, {r['topics']} mavzu, {r['marks']} baho"
-             for r in report]
-    await message.answer("✅ Yuklandi:\n" + "\n".join(lines), reply_markup=open_app_kb())
+    lines = []
+    for r in report:
+        line = f"• {r['class']} — {r['students']} o'quvchi, {r['topics']} mavzu, {r['marks']} baho"
+        if r["new_students"]:
+            line += f" (yangi o'quvchi: {r['new_students']})"
+        lines.append(line)
+    where = f"«{chapter_title}» bobiga" if chapter_title else "Jurnalga"
+    await message.answer(f"✅ {where} qo'shildi:\n" + "\n".join(lines) +
+                         "\n\nBoshqa boblar va baholar o'zgarmadi.", reply_markup=open_app_kb())
+
+
+@teacher.message(Command("import"))
+async def import_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Fayldagi mavzular qaysi bobga tegishli?", reply_markup=chapter_picker("imp"))
+
+
+@teacher.message(StateFilter(None), F.document)
+async def import_any_file(message: Message, state: FSMContext):
+    # A file sent without /import: ask for the chapter first, then import.
+    await state.set_state(ImportFile.file)
+    await state.update_data(file_id=message.document.file_id, file_name=message.document.file_name or "")
+    await message.answer("Bu fayldagi mavzular qaysi bobga tegishli?", reply_markup=chapter_picker("imp"))
+
+
+@teacher.callback_query(F.data.startswith("imp:"))
+async def import_chapter_chosen(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    chapter_id = int(cb.data.split(":")[1]) or None
+    title = None
+    if chapter_id:
+        with Session() as s:
+            ch = s.get(Chapter, chapter_id)
+            title = ch.title if ch else None
+    data = await state.get_data()
+    await cb.answer()
+    if data.get("file_id"):
+        await state.clear()
+        await cb.message.edit_text(f"Yuklanmoqda: {data['file_name']}")
+        await do_import(cb.message, bot, data["file_id"], data["file_name"], chapter_id, title)
+        return
+    await state.set_state(ImportFile.file)
+    await state.update_data(chapter_id=chapter_id, chapter_title=title)
+    await cb.message.edit_text(f"Endi Excel faylni yuboring ({title or 'fayldagi boblar bo‘yicha'}).")
+
+
+@teacher.message(ImportFile.file, F.document)
+async def import_file_after_choice(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    await do_import(message, bot, message.document.file_id, message.document.file_name,
+                    data.get("chapter_id"), data.get("chapter_title"))
+
+
+@teacher.message(Command("reset"))
+async def reset_start(message: Message):
+    with Session() as s:
+        backup = excel.export_workbook(s)
+    await message.answer_document(BufferedInputFile(backup, filename=f"Nusxa_{date.today():%Y-%m-%d}.xlsx"),
+                                  caption="Ehtiyot nusxa: o'chirishdan oldingi barcha ma'lumot.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 Ha, hammasini o'chirish", callback_data="reset:yes"),
+        InlineKeyboardButton(text="Yo'q", callback_data="reset:no")]])
+    await message.answer("Barcha sinflar, o'quvchilar, boblar, mavzular va baholar o'chiriladi. Ishonchingiz komilmi?",
+                         reply_markup=kb)
+
+
+@teacher.callback_query(F.data.startswith("reset:"))
+async def reset_confirm(cb: CallbackQuery):
+    if cb.data == "reset:yes":
+        with Session() as s:
+            services.reset_all(s)
+            s.commit()
+        await cb.message.edit_text("🗑 Hamma ma'lumot o'chirildi. Endi /add_chapter bilan boblarni qaytadan yuklang.")
+    else:
+        await cb.message.edit_text("Bekor qilindi. Hech narsa o'chirilmadi.")
+    await cb.answer()
 
 
 @teacher.message(Command("export"))
@@ -271,6 +358,7 @@ async def run_bot():
         BotCommand(command="chapters", description="Boblar ro'yxati"),
         BotCommand(command="import", description="Excel fayldan yuklash"),
         BotCommand(command="export", description="Excel faylga chiqarish"),
+        BotCommand(command="reset", description="Hamma ma'lumotni o'chirish"),
     ])
     if config.WEBAPP_URL:
         await bot.set_chat_menu_button(

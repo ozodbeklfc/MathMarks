@@ -42,11 +42,13 @@ DEV_MODE=1 python main.py        # open http://localhost:8000
 
 ## Bot commands
 
-`/start`, `/add_class`, `/add_class_members`, `/add_chapter`, `/chapters`, `/classes`, `/import`, `/export`, `/cancel`.
+`/start`, `/add_class`, `/add_class_members`, `/add_chapter`, `/chapters`, `/classes`, `/import`, `/export`, `/reset`, `/cancel`.
 
-`/add_chapter` asks for the chapter (bob) name, then for its topics, one per line (`/skip` to add them later).
+`/add_chapter` asks for the chapter (bob) name, then for that chapter's Excel file or a list of topics (`/skip` to add them later).
 
-Sending an `.xlsx` file imports it: each sheet becomes a class, and a class with the same name is replaced.
+`/reset` sends a backup Excel file, then asks before deleting everything.
+
+Importing never deletes anything: each sheet is matched to a class by name (spaces ignored), students by name, and the file's topics and marks are added to the chosen chapter. Re-sending the same file only overwrites those cells.
 Two layouts are read:
 
 - the original gradebook: topics in row 1, students from row 2;
